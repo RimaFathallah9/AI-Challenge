@@ -1,0 +1,200 @@
+// Prisma schema for NEXOVA platform
+// Defines all database models with proper relations
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  TECHNICIAN
+}
+
+enum MachineStatus {
+  ONLINE
+  OFFLINE
+  MAINTENANCE
+  WARNING
+  CRITICAL
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum PredictionType {
+  FORECAST_24H
+  FORECAST_7D
+}
+
+// ===========================
+// User Model
+// ===========================
+model User {
+  id         String    @id @default(cuid())
+  email      String    @unique
+  password   String
+  name       String?
+  role       Role      @default(TECHNICIAN)
+  factoryId  String?
+  factory    Factory?  @relation("UserFactory", fields: [factoryId], references: [id])
+  machinesCreated  Machine[] @relation("MachineCreatedBy")
+  machinesApproved Machine[] @relation("MachineApprovedBy")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@map("users")
+}
+
+// ===========================
+// Factory Model
+// ===========================
+model Factory {
+  id        String    @id @default(cuid())
+  name      String
+  location  String?
+  machines  Machine[]
+  users     User[]    @relation("UserFactory")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("factories")
+}
+
+// ===========================
+// Machine Model
+// ===========================
+model Machine {
+  id              String          @id @default(cuid())
+  name            String
+  type            String
+  status          MachineStatus   @default(ONLINE)
+  approvalStatus  ApprovalStatus  @default(APPROVED)
+  factoryId       String
+  factory         Factory         @relation(fields: [factoryId], references: [id], onDelete: Cascade)
+  createdById     String?
+  createdBy       User?           @relation("MachineCreatedBy", fields: [createdById], references: [id])
+  approvedById    String?
+  approvedBy      User?           @relation("MachineApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  energyReadings  EnergyReading[]
+  predictions     Prediction[]
+  alerts          Alert[]
+  recommendations Recommendation[]
+  aiDecisionLogs  AIDecisionLog[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@map("machines")
+}
+
+// ===========================
+// Energy Reading Model (IoT data)
+// ===========================
+model EnergyReading {
+  id          String   @id @default(cuid())
+  machineId   String
+  machine     Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  voltage     Float
+  current     Float
+  power       Float
+  temperature Float
+  vibration   Float    @default(0) // mm/s
+  production  Float    @default(0) // units/hour
+  runtime     Float    // hours
+  timestamp   DateTime @default(now())
+
+  @@index([machineId, timestamp])
+  @@map("energy_readings")
+}
+
+// ===========================
+// AI Prediction Model
+// ===========================
+model Prediction {
+  id          String         @id @default(cuid())
+  machineId   String
+  machine     Machine        @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  type        PredictionType
+  value       Float          // kWh predicted
+  confidence  Float?         // 0-1 confidence score
+  generatedAt DateTime       @default(now())
+
+  @@map("predictions")
+}
+
+// ===========================
+// Alert Model
+// ===========================
+model Alert {
+  id         String        @id @default(cuid())
+  machineId  String
+  machine    Machine       @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  message    String
+  details    String?
+  severity   AlertSeverity @default(MEDIUM)
+  resolved   Boolean       @default(false)
+  resolvedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  @@index([machineId, resolved])
+  @@map("alerts")
+}
+
+// ===========================
+// AI Recommendation Model
+// ===========================
+model Recommendation {
+  id        String   @id @default(cuid())
+  machineId String
+  machine   Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  content   String
+  savings   Float?   // estimated kWh savings
+  applied   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("recommendations")
+}
+
+// ===========================
+// AI Decision Action Log Model
+// ===========================
+model AIDecisionLog {
+  id               String   @id @default(cuid())
+  machineId        String
+  machine          Machine  @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  timestamp        DateTime @default(now())
+  
+  // Context snapshot saved as JSON
+  contextSnapshot  String   @db.Text
+  anomalyType      String
+  
+  // Explainability
+  reasoningSummary String   @db.Text
+  actionTaken      String
+  
+  // Estimates
+  estimatedSavings Float?
+  preventedLoss    Float?
+  
+  // Transparency
+  humanOverride    Boolean  @default(false)
+
+  @@index([machineId, timestamp])
+  @@map("ai_decision_logs")
+}

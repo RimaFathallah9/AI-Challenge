@@ -1,0 +1,1 @@
+{"version":3,"file":"wsServer.d.ts","sourceRoot":"","sources":["../../src/websocket/wsServer.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAE,MAAM,MAAM,CAAC;AAa9B,wBAAgB,cAAc,CAAC,MAAM,EAAE,MAAM,QAsC5C;AAED;;GAEG;AACH,wBAAgB,SAAS,CAAC,OAAO,EAAE,MAAM,QAOxC"}
