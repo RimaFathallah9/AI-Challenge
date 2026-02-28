@@ -1,0 +1,7 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "docker run": true,
+        "docker rm": true,
+        "npm run build": true
+    }
+}

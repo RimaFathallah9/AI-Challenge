@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { digitalTwinService, DigitalTwinState, SimulationResult, ProductionSimulationInput, EnergyOptimizationResult } from '../services/digital-twin.service';
+import { prisma } from '../prisma/client';
 
 export const digitalTwinController = {
     /**
@@ -18,13 +19,14 @@ export const digitalTwinController = {
 
             // Get all simulation results
             const simulations = await digitalTwinService.testAllScenarios(machineId);
-            state.simulationResults = simulations;
 
             // Calculate RUL
             const rul = digitalTwinService.calculateRUL(state);
 
+            // Create response with simulation results and RUL
             res.json({
                 ...state,
+                simulationResults: simulations,
                 remainingUsefulLife: rul,
             });
         } catch (error: any) {
@@ -72,8 +74,8 @@ export const digitalTwinController = {
             res.json({
                 machineId,
                 scenarios: results,
-                bestCase: results.reduce((min, r) => (r.failureProbability < min.failureProbability ? r : min)),
-                worstCase: results.reduce((max, r) => (r.failureProbability > max.failureProbability ? r : max)),
+                bestCase: results.reduce((min: SimulationResult, r: SimulationResult) => (r.failureProbability < min.failureProbability ? r : min)),
+                worstCase: results.reduce((max: SimulationResult, r: SimulationResult) => (r.failureProbability > max.failureProbability ? r : max)),
             });
         } catch (error: any) {
             console.error('[Digital Twin Controller] Test all scenarios error:', error);
@@ -145,9 +147,6 @@ export const digitalTwinController = {
      */
     async getAllMachines(req: Request, res: Response): Promise<void> {
         try {
-            const { Prisma } = require('@prisma/client');
-            const { prisma } = require('../prisma/client');
-
             const machines = await prisma.machine.findMany();
 
             const twins = await Promise.all(
