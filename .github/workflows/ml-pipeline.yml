@@ -1,0 +1,252 @@
+name: Train and Deploy ML Models
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'ai-service/**'
+      - '.github/workflows/ml-pipeline.yml'
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run model training weekly
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  data-generation:
+    name: Generate Training Data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy
+      
+      - name: Generate training data
+        working-directory: ./ai-service
+        run: |
+          python data_generator.py
+      
+      - name: Upload data artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: training-data
+          path: ai-service/data/
+          retention-days: 30
+
+  model-training:
+    name: Train ML Models
+    needs: data-generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ai-service/requirements.txt
+      
+      - name: Download training data
+        uses: actions/download-artifact@v3
+        with:
+          name: training-data
+          path: ai-service/data/
+      
+      - name: Train models
+        working-directory: ./ai-service
+        run: |
+          python train_models.py
+      
+      - name: Validate models
+        working-directory: ./ai-service
+        run: |
+          python -c "
+          import joblib
+          import os
+          models = [
+            'forecast_prophet.pkl',
+            'anomaly_isolation_forest.pkl',
+            'recommendation_rf.pkl'
+          ]
+          for model_file in models:
+            path = f'./models/{model_file}'
+            assert os.path.exists(path), f'{model_file} not found!'
+            model = joblib.load(path)
+            print(f'✓ {model_file} validated')
+          "
+      
+      - name: Upload trained models
+        uses: actions/upload-artifact@v3
+        with:
+          name: trained-models
+          path: ai-service/models/
+          retention-days: 90
+      
+      - name: Upload metrics
+        uses: actions/upload-artifact@v3
+        with:
+          name: training-metrics
+          path: ai-service/models/metrics.json
+
+  model-testing:
+    name: Test Model Inference
+    needs: model-training
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ai-service/requirements.txt pytest pytest-cov
+      
+      - name: Download models
+        uses: actions/download-artifact@v3
+        with:
+          name: trained-models
+          path: ai-service/models/
+      
+      - name: Run inference tests
+        working-directory: ./ai-service
+        run: |
+          python -c "
+          from model_inference import ModelInference
+          import numpy as np
+          
+          print('\n🧪 Testing Model Inference...')
+          inf = ModelInference(model_dir='./models')
+          
+          # Test forecast
+          print('\n📈 Testing forecast...')
+          result = inf.forecast_energy([100]*24, periods=12)
+          assert len(result['forecast']) == 12, 'Forecast length mismatch'
+          assert all(isinstance(x, (int, float)) for x in result['forecast']), 'Forecast contains non-numeric values'
+          print(f'  ✓ Forecast: {result}')
+          
+          # Test anomaly detection
+          print('\n🎯 Testing anomaly detection...')
+          result = inf.detect_anomalies(power=100, temperature=45, vibration=2)
+          assert 'is_anomaly' in result, 'Missing is_anomaly'
+          assert 'anomaly_score' in result, 'Missing anomaly_score'
+          print(f'  ✓ Anomaly detection: score={result[\"anomaly_score\"]:.2f}')
+          
+          # Test recommendation
+          print('\n🔧 Testing maintenance recommendation...')
+          result = inf.recommend_maintenance(power=100, temperature=45, vibration=2)
+          assert 'risk_level' in result, 'Missing risk_level'
+          assert 'urgency' in result, 'Missing urgency'
+          print(f'  ✓ Recommendation: urgency={result[\"urgency\"]}')
+          
+          print('\n✅ All inference tests passed!')
+          "
+
+  build-push-image:
+    name: Build and Push Docker Image
+    needs: model-testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download models
+        uses: actions/download-artifact@v3
+        with:
+          name: trained-models
+          path: ai-service/models/
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./ai-service
+          push: false
+          tags: ai-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-release:
+    name: Create Model Release
+    needs: model-testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download models
+        uses: actions/download-artifact@v3
+        with:
+          name: trained-models
+          path: ai-service/models/
+      
+      - name: Download metrics
+        uses: actions/download-artifact@v3
+        with:
+          name: training-metrics
+          path: ai-service/models/
+      
+      - name: Create release notes
+        run: |
+          cat > RELEASE_NOTES.md << 'EOF'
+          # ML Model Release
+          
+          ## Models Included
+          - **Forecast**: Prophet timeseries forecasting model
+          - **Anomaly Detection**: Isolation Forest anomaly detector
+          - **Maintenance Recommendation**: Random Forest risk predictor
+          
+          ## Training Details
+          - Training Date: $(date)
+          - Data Points: 180 days of historical data
+          - Models Trained: 3 core ML models
+          
+          ## How to Use
+          1. Download the trained models
+          2. Place in `ai-service/models/`
+          3. Run API with models loaded
+          
+          ## Model Endpoints
+          - POST /forecast - Energy forecast with confidence intervals
+          - POST /anomaly - Real-time anomaly detection
+          - POST /recommendations - Maintenance recommendations
+          EOF
+      
+      - name: Display metrics
+        run: |
+          echo "## Training Metrics"
+          cat ai-service/models/metrics.json || echo "Metrics not found"
+
+  notification:
+    name: Send Status Notification
+    needs: [model-testing, data-generation, model-training]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check pipeline status
+        run: |
+          echo "ML Pipeline Status: ${{ needs.model-testing.result }}"
+          if [[ "${{ needs.model-testing.result }}" == "success" ]]; then
+            echo "✅ All models trained and tested successfully!"
+          else
+            echo "❌ Pipeline failed"
+            exit 1
+          fi

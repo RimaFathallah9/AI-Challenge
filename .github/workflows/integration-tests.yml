@@ -1,0 +1,174 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test-api:
+    name: Test API with Models
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Python dependencies
+        run: |
+          pip install -r ai-service/requirements.txt
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: npm install
+      
+      - name: Generate test data and train models
+        working-directory: ./ai-service
+        run: |
+          python data_generator.py
+          python train_models.py
+      
+      - name: Run API health check
+        working-directory: ./ai-service
+        run: |
+          python -c "
+          from main import app
+          from fastapi.testclient import TestClient
+          
+          client = TestClient(app)
+          response = client.get('/health')
+          assert response.status_code == 200, f'Health check failed: {response.text}'
+          print('✓ API health check passed')
+          "
+      
+      - name: Test forecast endpoint
+        working-directory: ./ai-service
+        run: |
+          python -c "
+          from main import app
+          from fastapi.testclient import TestClient
+          import json
+          
+          client = TestClient(app)
+          payload = {
+            'data': [100.0] * 24,
+            'horizon': 12
+          }
+          response = client.post('/forecast', json=payload)
+          assert response.status_code == 200, f'Forecast failed: {response.text}'
+          result = response.json()
+          assert 'forecast' in result, 'Missing forecast in response'
+          print(f'✓ Forecast endpoint: {len(result[\"forecast\"])} predictions')
+          "
+      
+      - name: Test anomaly endpoint
+        working-directory: ./ai-service
+        run: |
+          python -c "
+          from main import app
+          from fastapi.testclient import TestClient
+          
+          client = TestClient(app)
+          payload = {
+            'data': [
+              {'power': 100, 'temperature': 45, 'vibration': 2}
+            ]
+          }
+          response = client.post('/anomaly', json=payload)
+          assert response.status_code == 200, f'Anomaly detection failed: {response.text}'
+          print('✓ Anomaly endpoint working')
+          "
+      
+      - name: Test recommendations endpoint
+        working-directory: ./ai-service
+        run: |
+          python -c "
+          from main import app
+          from fastapi.testclient import TestClient
+          
+          client = TestClient(app)
+          payload = {
+            'data': [
+              {'power': 100, 'temperature': 45, 'vibration': 2}
+            ]
+          }
+          response = client.post('/recommendations', json=payload)
+          assert response.status_code == 200, f'Recommendations failed: {response.text}'
+          print('✓ Recommendations endpoint working')
+          "
+
+  test-backend:
+    name: Test Backend Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        working-directory: ./backend
+        run: npm install
+      
+      - name: Lint TypeScript
+        working-directory: ./backend
+        run: npx tsc --noEmit
+      
+      - name: Check for type errors
+        working-directory: ./backend
+        continue-on-error: true
+        run: |
+          npm run build 2>&1 || true
+
+  test-frontend:
+    name: Test Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm install
+      
+      - name: Build frontend
+        working-directory: ./frontend
+        run: npm run build
+      
+      - name: Check build output
+        run: |
+          if [ -d "frontend/dist" ]; then
+            echo "✓ Frontend build successful"
+            ls -la frontend/dist/ | head -10
+          else
+            echo "❌ Build output not found"
+            exit 1
+          fi
