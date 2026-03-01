@@ -38,7 +38,7 @@ class IndustrialDataGenerator:
                                    vibration, runtime, production, is_anomaly
         """
         dates = pd.date_range(
-            start='2024-01-01',
+            start='2021-01-01',
             periods=int(24*60/5) * days,  # 5-min intervals
             freq=frequency
         )
