@@ -72,7 +72,7 @@
    - **XGBoost + LightGBM Ensemble** (Python): Gradient boosting ensemble with optimized weight averaging
    - **50K+ Training Rows**: Synthetic industrial IoT data across 20 machine profiles
    - **Feature Engineering**: Rolling statistics (1h/6h/24h), lag features, cyclical time encodings, cross-machine correlations
-   - **Dual-Layer Anomaly Detection**: Isolation Forest + TensorFlow Autoencoder for high-precision anomaly scoring
+   - **Dual-Layer Anomaly Detection**: Isolation Forest + PyTorch Autoencoder (GPU-accelerated) for high-precision anomaly scoring
    - **Predictive Maintenance**: XGBoost Classifier with failure probability and RUL estimation
    - **RL Optimization Engine**: Q-Learning agent with domain safety rules for real-time action recommendations
 
@@ -125,7 +125,7 @@
 ### 3. **Anomaly Detection — Isolation Forest + Autoencoder** (UPGRADED v3.0)
    - **Dual-Layer Architecture**:
      - **Layer 1**: Scikit-Learn Isolation Forest (fast, interpretable)
-     - **Layer 2**: TensorFlow Autoencoder (deep reconstruction error)
+     - **Layer 2**: PyTorch Autoencoder (deep reconstruction error, GPU-accelerated)
    - **Combination Modes**: Union (high recall) or Intersection (high precision)
    - **Output**: Anomaly score (0–1), boolean flag, reconstruction error, method breakdown
    - **Threshold**: Configurable percentile-based (default 95th)
@@ -213,7 +213,7 @@ NEXOVA includes a **production-grade ML pipeline** with 4 trained models, an AI 
 - **Use**: Capacity planning, demand forecasting, cost optimization
 
 #### 2. **Anomaly Detection (Isolation Forest + Autoencoder)**
-- **Framework**: Scikit-Learn Isolation Forest + TensorFlow Autoencoder
+- **Framework**: Scikit-Learn Isolation Forest + PyTorch Autoencoder (CUDA)
 - **Input**: Power, temperature, vibration, voltage, current, runtime (scaled)
 - **Output**: Anomaly score (0–1), boolean flag, reconstruction error
 - **Modes**: Union (high recall) or Intersection (high precision)
@@ -253,31 +253,39 @@ NEXOVA includes a **production-grade ML pipeline** with 4 trained models, an AI 
 
 ### 🧠 Model Training Pipeline
 - **Orchestrator**: `ai-service/pipeline/training/train_all.py`
-- **Training Time**: ~4 minutes end-to-end
+- **Training Time**: ~12 minutes end-to-end (GPU-accelerated)
 - **Process**:
   1. Generates 50K+ rows of synthetic IoT data
   2. Runs preprocessing (RobustScaler, missing value imputation, outlier clipping)
   3. Engineers 50+ features (rolling stats, lags, time encodings, interactions)
   4. Trains all 4 models with evaluation metrics
   5. Saves model artifacts (.pkl) and metrics to `models/trained/`
-- **Output**: `models/trained/` directory with:
-  - `energy_model.pkl` — XGBoost + LightGBM ensemble
-  - `anomaly_model.pkl` — Isolation Forest + Autoencoder
-  - `maintenance_model.pkl` — XGBoost Classifier
-  - `optimization_model.pkl` — Q-Learning agent
-  - `preprocessor.pkl` — Fitted RobustScaler
-  - `metrics.json` — All evaluation metrics
+- **Output**: `models/trained/` directory with 13 artifacts:
+  - `energy_xgb.pkl` — XGBoost energy regressor
+  - `energy_lgb.pkl` — LightGBM energy regressor
+  - `energy_scaler.pkl` — Energy feature scaler
+  - `anomaly_isoforest.pkl` — Isolation Forest detector
+  - `anomaly_autoencoder.pt` — PyTorch Autoencoder (GPU-trained)
+  - `anomaly_scaler.pkl` — Anomaly feature scaler
+  - `maintenance_xgb.pkl` — XGBoost failure classifier
+  - `maintenance_scaler.pkl` — Maintenance feature scaler
+  - `optimization_qtable.pkl` — Q-Learning Q-table
+  - `optimization_config.pkl` — RL configuration
+  - `feature_columns.pkl` — Feature column definitions
+  - `training_metrics.json` — All evaluation metrics
+  - `training_report.txt` — Human-readable training summary
 
 ### 🧪 Testing
 - **Legacy Tests**: `ai-service/test_models.py` (backward compatibility)
 - **Coverage**: Model loading, inference shape validation, endpoint response formats
 
 ### 🐳 Docker & Deployment
-- **Dockerfile**: `ai-service/Dockerfile` — Multi-stage production build
-- **Base**: Python 3.11-slim, non-root user, health check
+- **Dockerfile**: `ai-service/Dockerfile` — Multi-stage GPU-enabled production build
+- **Base**: `nvidia/cuda:12.4.1-runtime-ubuntu22.04` with Python 3.12 (configurable CPU-only via `--build-arg BASE_IMAGE=python:3.12-slim`)
 - **Workers**: 4 Uvicorn workers for production concurrency
-- **Image Size**: ~600 MB (multi-stage optimized)
+- **Image Size**: ~1.8 GB (GPU) / ~600 MB (CPU-only slim build)
 - **Security**: Runs as non-root `nexova` user
+- **GPU Support**: Auto-detects CUDA; XGBoost on `cuda:0`, LightGBM on `gpu`, PyTorch Autoencoder on CUDA
 
 ### 📚 Documentation
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: System architecture with 4 Mermaid diagrams
@@ -291,6 +299,11 @@ NEXOVA includes a **production-grade ML pipeline** with 4 trained models, an AI 
   - Automated retraining pipeline with canary deployments
   - Apache Kafka streaming architecture
   - Performance benchmarks and infrastructure roadmap
+- **[NEXOVA_PROFESSOR_GUIDE.md](NEXOVA_PROFESSOR_GUIDE.md)**: Comprehensive professor-style technical documentation
+  - GPU acceleration architecture (CUDA 12.4, RTX 4050)
+  - PyTorch migration details (TensorFlow → PyTorch Autoencoder)
+  - Complete model inventory with training parameters
+  - Production deployment guide with GPU Docker support
 
 ### ⚡ Quick Start — ML Pipeline v3.0
 
@@ -339,23 +352,23 @@ open http://localhost:8000/docs
 ```
 
 ### 📊 Model Artifacts
-All metrics are saved to `ai-service/models/trained/metrics.json`:
+All metrics are saved to `ai-service/models/trained/training_metrics.json`:
 
 ```json
 {
   "energy": {
-    "mae": 8.2,
-    "rmse": 12.1,
-    "r2": 0.94,
-    "xgb_weight": 0.6,
-    "lgbm_weight": 0.4
+    "xgb_mae": 8.2,
+    "xgb_rmse": 12.1,
+    "xgb_r2": 0.94,
+    "lgb_mae": 8.5,
+    "lgb_rmse": 12.4,
+    "lgb_r2": 0.93
   },
   "anomaly": {
-    "precision": 0.91,
-    "recall": 0.88,
-    "f1": 0.89,
-    "auc": 0.95,
-    "autoencoder_threshold": 0.035
+    "isolation_forest_contamination": 0.05,
+    "autoencoder_threshold": 0.035,
+    "autoencoder_epochs": 50,
+    "device": "cuda"
   },
   "maintenance": {
     "accuracy": 0.96,
@@ -377,15 +390,16 @@ All metrics are saved to `ai-service/models/trained/metrics.json`:
 ## Prerequisites
 - PostgreSQL running at localhost:5432
 - Node.js 18+
-- Python 3.11+ (for ML models)
+- Python 3.12+ (for ML models with GPU acceleration)
+- NVIDIA GPU with CUDA 12.4+ (optional, falls back to CPU)
 - Google Generative AI API key (for chatbot, optional)
 - Docker & Docker Compose (for containerized deployment)
 
 ### Required Python ML Libraries
 Automatically installed via `pip install -r ai-service/requirements.txt`:
 - fastapi, uvicorn (API service)
-- scikit-learn, xgboost, lightgbm (ML models)
-- tensorflow (Autoencoder — optional, service works without it)
+- scikit-learn, xgboost (CUDA), lightgbm (GPU) (ML models)
+- torch (PyTorch 2.6+ with CUDA 12.4 — Autoencoder, GPU-accelerated)
 - pandas, numpy (data processing)
 - pydantic (request/response validation)
 - joblib (model serialization)
@@ -410,11 +424,11 @@ chmod +x setup-ml-pipeline.sh
 
 This script will:
 1. ✅ Generate 180 days of synthetic training data
-2. ✅ Train all 3 ML models (Prophet, Isolation Forest, Random Forest)
+2. ✅ Train all 4 ML model groups (Energy XGBoost+LightGBM, Anomaly IsoForest+Autoencoder, Maintenance XGBoost, RL Q-Learning)
 3. ✅ Run 30+ tests to validate models
-4. ✅ Save trained models and metrics
+4. ✅ Save 13 trained model artifacts and metrics
 
-**Total Time**: ~5 minutes
+**Total Time**: ~12 minutes (GPU) / ~20 minutes (CPU)
 
 ### Manual Backend Setup
 ```powershell
@@ -678,11 +692,14 @@ ws://localhost:4000/ws            WebSocket server for live events
 │  └──────────┴──────────────┴──────────┴────────────┘   │
 │           | PostgreSQL & Prisma ORM                     │
 ├─────────────────────────────────────────────────────────┤
-│                   AI MICROSERVICE (Python)              │
+│                   AI MICROSERVICE (Python FastAPI)             │
 │  ┌──────────┬──────────────┬──────────────────────┐    │
-│  │Forecasting│ Anomaly      │  Sensor Simulator   │    │
-│  │(Prophet) │  Detection   │  (IoT data gen)     │    │
+│  │Energy    │ Anomaly      │  AI Decision Agent  │    │
+│  │(XGBoost  │ Detection    │  (Fusion Layer +    │    │
+│  │+LightGBM)│ (IsoForest + │   Risk Aggregation) │    │
+│  │          │  PyTorch AE) │                     │    │
 │  └──────────┴──────────────┴──────────────────────┘    │
+│  GPU: CUDA 12.4 (XGBoost, LightGBM, PyTorch)          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -719,13 +736,13 @@ ws://localhost:4000/ws            WebSocket server for live events
 |---|---|---|
 | **Generative AI** | Google Gemini 1.5 Flash | Autonomous anomaly evaluation & chat |
 | **Energy Prediction** | XGBoost + LightGBM Ensemble | Next-hour energy consumption forecasting |
-| **Anomaly Detection** | Isolation Forest + TensorFlow Autoencoder | Dual-layer multivariate anomaly scoring |
+| **Anomaly Detection** | Isolation Forest + PyTorch Autoencoder (CUDA) | Dual-layer multivariate anomaly scoring |
 | **Predictive Maintenance** | XGBoost Classifier | Binary failure prediction with feature importance |
 | **Optimization Engine** | Q-Learning RL + Domain Rules | Real-time operational action recommendations |
 | **AI Decision Agent** | Custom fusion layer | Weighted risk aggregation across all models |
 | **Feature Engineering** | pandas, NumPy | Rolling stats, lags, time encodings, interactions |
 | **Preprocessing** | scikit-learn RobustScaler | Outlier-resistant normalization |
-| **Python Runtime** | Python 3.11, FastAPI, Uvicorn | AI microservice framework |
+| **Python Runtime** | Python 3.12, FastAPI, Uvicorn | AI microservice framework |
 
 ### Data & Storage
 | Component | Technology | Purpose |
@@ -934,11 +951,12 @@ LGBM_N_ESTIMATORS=500
 LGBM_LEARNING_RATE=0.05
 LGBM_MAX_DEPTH=8
 
-# Anomaly Detection (Isolation Forest + Autoencoder)
+# Anomaly Detection (Isolation Forest + PyTorch Autoencoder)
 IF_N_ESTIMATORS=200
 IF_CONTAMINATION=0.05
 AUTOENCODER_EPOCHS=50
 ANOMALY_PERCENTILE=95
+# GPU: PyTorch Autoencoder uses CUDA if available
 
 # Predictive Maintenance (XGBoost Classifier)
 MAINT_N_ESTIMATORS=300
@@ -1022,6 +1040,36 @@ const failureModel = "Weibull distribution";
 const shape = 1.8;
 const scale = 15000; // Mean time to failure (hours)
 ```
+
+---
+
+## GPU Acceleration (v3.0)
+
+NEXOVA v3.0 leverages NVIDIA CUDA for hardware-accelerated ML training and inference:
+
+### Supported GPU Frameworks
+| Model | GPU Framework | Device |
+|---|---|---|
+| **Energy (XGBoost)** | XGBoost CUDA | `cuda:0` |
+| **Energy (LightGBM)** | LightGBM GPU | `gpu` |
+| **Anomaly (Autoencoder)** | PyTorch CUDA 12.4 | `cuda:0` |
+| **Anomaly (Isolation Forest)** | CPU (scikit-learn) | `cpu` |
+| **Maintenance (XGBoost)** | XGBoost CUDA | `cuda:0` |
+| **Optimization (Q-Learning)** | CPU (tabular) | `cpu` |
+
+### GPU Requirements
+- **Hardware**: NVIDIA GPU with 6GB+ VRAM (tested on RTX 4050)
+- **Driver**: NVIDIA Driver 565.90+ (CUDA 12.7 compatible)
+- **Runtime**: PyTorch 2.6.0+cu124, XGBoost 2.1.1 (CUDA), LightGBM 4.6.0 (GPU)
+
+### CPU Fallback
+All models automatically fall back to CPU if no GPU is detected. To force CPU-only Docker builds:
+```bash
+docker build --build-arg BASE_IMAGE=python:3.12-slim -t nexova-ai:cpu ./ai-service
+```
+
+### Windows DLL Import Order
+> **Critical**: On Windows, `torch` must be imported BEFORE `scikit-learn` to avoid DLL initialization crashes. The codebase handles this automatically via early imports in `main.py`.
 
 ---
 
@@ -1203,10 +1251,11 @@ Recommendation: Not recommended for >1.5 hours continuous operation
 #### Issue: "Forecasting not working" / "AI Service not responding"
 ✅ **Solution**:
 1. Verify AI service is running: `docker compose logs ai-service`
-2. Check Python dependencies: `pip list | grep prophet`
+2. Check Python dependencies: `pip list | grep -E "xgboost|lightgbm|torch"`
 3. Test endpoint directly: `curl http://localhost:8000/docs`
 4. Check firewall between backend and AI service
-5. Review logs for missing Prophet training data (needs minimum 10 observations)
+5. Verify trained models exist in `ai-service/models/trained/` (13 files expected)
+6. Check GPU availability: `python -c "import torch; print(torch.cuda.is_available())"`
 
 #### Issue: "Digital Twin predictions seem inaccurate"
 ✅ **Solution**:
@@ -1317,7 +1366,7 @@ docker stats
 
 # Expected usage:
 # - Backend: 150-300 MB RAM, 1-5% CPU
-# - AI Service: 200-400 MB RAM, 2-8% CPU  
+# - AI Service: 400-800 MB RAM, 5-15% CPU (GPU: 1-2 GB VRAM)
 # - PostgreSQL: 100-200 MB RAM, 1-3% CPU (idle)
 ```
 
@@ -1401,8 +1450,8 @@ time curl http://localhost:8000/api/forecast -X POST -d '{...}'
 - ✅ ~~Redis caching for forecasts and predictions~~ → Caching strategy in SCALABILITY.md
 - ✅ ~~Kafka for real-time event streaming pipeline~~ → Streaming architecture in SCALABILITY.md
 - ✅ ~~ML Model Registry with A/B testing~~ → Model registry + canary deployment documented
+- ✅ ~~Distributed training on GPU/TPU clusters~~ → GPU acceleration implemented (CUDA 12.4, RTX 4050)
 - TimescaleDB for billions of time-series records
-- Distributed training on GPU/TPU clusters
 
 ### Phase 5: Domain-Specific Verticals (2027+)
 - Water Treatment Plants (pump/valve/filter networks)
@@ -1445,15 +1494,15 @@ time curl http://localhost:8000/api/forecast -X POST -d '{...}'
 - [XGBoost Documentation](https://xgboost.readthedocs.io)
 - [LightGBM Documentation](https://lightgbm.readthedocs.io)
 - [Scikit-Learn](https://scikit-learn.org/stable/)
-- [TensorFlow](https://www.tensorflow.org/api_docs)
+- [PyTorch](https://pytorch.org/docs/stable/)
 - [FastAPI](https://fastapi.tiangolo.com)
 - [Docker Compose](https://docs.docker.com/compose)
 - [PostgreSQL 16](https://www.postgresql.org/docs/16)
 
 ### System Requirements
 - **Minimum**: 2 CPU cores, 4GB RAM, 10GB disk
-- **Recommended**: 4+ cores, 8GB+ RAM, 50GB SSD
-- **Production**: Dedicated resources, managed DB, CDN
+- **Recommended**: 4+ cores, 8GB+ RAM, 50GB SSD, NVIDIA GPU (6GB+ VRAM)
+- **Production**: Dedicated resources, managed DB, CDN, NVIDIA GPU with CUDA 12.4+
 
 ---
 
@@ -1463,7 +1512,7 @@ time curl http://localhost:8000/api/forecast -X POST -d '{...}'
 A: Yes! Backend accepts real sensor data via REST API. MQTT integration coming Q4 2026.
 
 **Q: How often are predictions updated?**
-A: Continuously. Gemini evaluates anomalies in real-time, Digital Twin updates with every reading, Prophet retrains daily.
+A: Continuously. Gemini evaluates anomalies in real-time, Digital Twin updates with every reading, ML models retrain on demand.
 
 **Q: What happens offline?**
 A: System operates in degraded mode. Rule-based detection continues locally, reopens connection when available.
@@ -1493,4 +1542,4 @@ For issues, check:
 
 ---
 
-**Last Updated**: March 2026 | **Version**: 3.0.0 | **Status**: Production Ready ✅
+**Last Updated**: June 2025 | **Version**: 3.0.0 (GPU-Accelerated) | **Status**: Production Ready ✅
