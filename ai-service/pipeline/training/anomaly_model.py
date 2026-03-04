@@ -7,8 +7,8 @@ and an Autoencoder (captures complex non-linear patterns).
 Model choice rationale:
 - Isolation Forest: O(n log n), no assumptions on data distribution, works well
   on tabular IoT data with moderate dimensionality
-- Autoencoder: learns a compressed representation; anomalies have high
-  reconstruction error. Good at catching subtle multi-variate deviations
+- Autoencoder (PyTorch): learns a compressed representation; anomalies have high
+  reconstruction error. GPU-accelerated via CUDA on RTX 4050.
 - Combined: union of both detectors → high recall; intersection → high precision
 
 Evaluation: Precision, Recall, F1, AUC-ROC (using injected anomaly labels)
@@ -20,23 +20,30 @@ import numpy as np
 import pandas as pd
 import joblib
 from typing import Dict, Any, Tuple
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config.settings import config
+
+# PyTorch MUST be imported BEFORE sklearn to avoid DLL conflicts on Windows
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    HAS_TORCH = True
+    TORCH_DEVICE = config.gpu.torch_device
+except (ImportError, OSError, Exception):
+    HAS_TORCH = False
+    TORCH_DEVICE = "cpu"
+    # Placeholder so class definition doesn't fail at module load
+    torch = None
+    nn = None
+
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, classification_report,
 )
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config.settings import config
-
-# Optional TensorFlow / Keras for Autoencoder
-try:
-    import tensorflow as tf
-    from tensorflow import keras
-    HAS_TF = True
-except (ImportError, AttributeError, Exception):
-    HAS_TF = False
 
 
 FEATURE_COLS = [
@@ -45,9 +52,43 @@ FEATURE_COLS = [
 ]
 
 
+# Autoencoder class defined only when PyTorch is available
+if HAS_TORCH:
+    class Autoencoder(nn.Module):
+        """PyTorch Autoencoder for anomaly detection via reconstruction error."""
+
+        def __init__(self, input_dim: int, encoding_dim: int = 8):
+            super().__init__()
+            self.encoder = nn.Sequential(
+                nn.Linear(input_dim, 32),
+                nn.ReLU(),
+                nn.BatchNorm1d(32),
+                nn.Linear(32, 16),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(16, encoding_dim),
+                nn.ReLU(),
+            )
+            self.decoder = nn.Sequential(
+                nn.Linear(encoding_dim, 16),
+                nn.ReLU(),
+                nn.BatchNorm1d(16),
+                nn.Linear(16, 32),
+                nn.ReLU(),
+                nn.Linear(32, input_dim),
+            )
+
+        def forward(self, x):
+            encoded = self.encoder(x)
+            decoded = self.decoder(encoded)
+            return decoded
+else:
+    Autoencoder = None  # Will be None when PyTorch is not available
+
+
 class AnomalyDetectionModel:
     """
-    Dual-layer anomaly detector: Isolation Forest + Autoencoder.
+    Dual-layer anomaly detector: Isolation Forest + PyTorch Autoencoder (GPU).
     
     Training:   model.train(df_train, df_val)
     Inference:  result = model.predict(features_dict)
@@ -61,6 +102,7 @@ class AnomalyDetectionModel:
         self.iso_threshold = None   # isolation forest decision threshold
         self.metrics = {}
         self.feature_names = FEATURE_COLS
+        self.device = TORCH_DEVICE
 
     def _get_features(self, df: pd.DataFrame) -> np.ndarray:
         """Extract and scale feature matrix."""
@@ -88,8 +130,8 @@ class AnomalyDetectionModel:
 
         results = {}
 
-        # ---- Isolation Forest ----
-        print("  Training Isolation Forest...")
+        # ---- Isolation Forest (CPU — no GPU implementation in sklearn) ----
+        print("  Training Isolation Forest (CPU)...")
         self.iso_forest = IsolationForest(
             n_estimators=config.model.anomaly_n_estimators,
             contamination=config.model.anomaly_contamination,
@@ -101,26 +143,17 @@ class AnomalyDetectionModel:
         iso_pred = (self.iso_forest.predict(X_val) == -1).astype(int)
         results["isolation_forest"] = self._evaluate(y_val, iso_pred, iso_scores, "Isolation Forest")
 
-        # ---- Autoencoder ----
-        if HAS_TF:
-            print("  Training Autoencoder...")
+        # ---- PyTorch Autoencoder (GPU-accelerated) ----
+        if HAS_TORCH:
+            device = self.device
+            print(f"  Training Autoencoder on {device.upper()}...")
             input_dim = X_train.shape[1]
             enc_dim = config.model.autoencoder_encoding_dim
 
-            # Build autoencoder architecture
-            encoder_input = keras.Input(shape=(input_dim,))
-            x = keras.layers.Dense(32, activation="relu")(encoder_input)
-            x = keras.layers.BatchNormalization()(x)
-            x = keras.layers.Dense(16, activation="relu")(x)
-            x = keras.layers.Dropout(0.2)(x)
-            encoded = keras.layers.Dense(enc_dim, activation="relu", name="bottleneck")(x)
-            x = keras.layers.Dense(16, activation="relu")(encoded)
-            x = keras.layers.BatchNormalization()(x)
-            x = keras.layers.Dense(32, activation="relu")(x)
-            decoded = keras.layers.Dense(input_dim, activation="linear")(x)
-
-            self.autoencoder = keras.Model(encoder_input, decoded)
-            self.autoencoder.compile(optimizer="adam", loss="mse")
+            # Build model and move to GPU
+            self.autoencoder = Autoencoder(input_dim, enc_dim).to(device)
+            optimizer = torch.optim.Adam(self.autoencoder.parameters(), lr=1e-3)
+            criterion = nn.MSELoss()
 
             # Train on NORMAL data only (unsupervised)
             if "is_anomaly" in df_train.columns:
@@ -129,24 +162,46 @@ class AnomalyDetectionModel:
             else:
                 X_train_normal = X_train
 
-            self.autoencoder.fit(
-                X_train_normal, X_train_normal,
-                epochs=config.model.autoencoder_epochs,
+            # Create PyTorch DataLoader
+            train_tensor = torch.FloatTensor(X_train_normal).to(device)
+            train_dataset = TensorDataset(train_tensor, train_tensor)
+            train_loader = DataLoader(
+                train_dataset,
                 batch_size=config.model.autoencoder_batch_size,
-                validation_split=0.1,
-                verbose=0,
+                shuffle=True,
+                drop_last=True,  # Avoid batch_size=1 which breaks BatchNorm1d
             )
 
-            # Compute reconstruction error on validation
-            X_val_reconstructed = self.autoencoder.predict(X_val, verbose=0)
-            ae_errors = np.mean((X_val - X_val_reconstructed) ** 2, axis=1)
+            # Training loop
+            self.autoencoder.train()
+            epochs = config.model.autoencoder_epochs
+            for epoch in range(epochs):
+                epoch_loss = 0.0
+                for batch_x, batch_y in train_loader:
+                    optimizer.zero_grad()
+                    output = self.autoencoder(batch_x)
+                    loss = criterion(output, batch_y)
+                    loss.backward()
+                    optimizer.step()
+                    epoch_loss += loss.item()
+                if (epoch + 1) % 10 == 0:
+                    avg_loss = epoch_loss / len(train_loader)
+                    print(f"    Epoch {epoch+1}/{epochs} — Loss: {avg_loss:.6f}")
 
-            # Set threshold at configured percentile of training reconstruction errors
-            X_train_recon = self.autoencoder.predict(X_train_normal, verbose=0)
-            train_errors = np.mean((X_train_normal - X_train_recon) ** 2, axis=1)
-            self.ae_threshold = float(np.percentile(
-                train_errors, config.model.autoencoder_threshold_percentile
-            ))
+            # Compute reconstruction error on validation
+            self.autoencoder.eval()
+            with torch.no_grad():
+                X_val_tensor = torch.FloatTensor(X_val).to(device)
+                X_val_recon = self.autoencoder(X_val_tensor).cpu().numpy()
+                ae_errors = np.mean((X_val - X_val_recon) ** 2, axis=1)
+
+                # Set threshold at configured percentile of training reconstruction errors
+                X_train_tensor = torch.FloatTensor(X_train_normal).to(device)
+                X_train_recon = self.autoencoder(X_train_tensor).cpu().numpy()
+                train_errors = np.mean((X_train_normal - X_train_recon) ** 2, axis=1)
+                self.ae_threshold = float(np.percentile(
+                    train_errors, config.model.autoencoder_threshold_percentile
+                ))
 
             ae_pred = (ae_errors > self.ae_threshold).astype(int)
             results["autoencoder"] = self._evaluate(y_val, ae_pred, ae_errors, "Autoencoder")
@@ -157,7 +212,7 @@ class AnomalyDetectionModel:
                               0.5 * (ae_errors / (ae_errors.max() + 1e-9))
             results["combined"] = self._evaluate(y_val, combined_pred, combined_scores, "Combined")
         else:
-            print("  ⚠ TensorFlow not available — using Isolation Forest only")
+            print("  ⚠ PyTorch not available — using Isolation Forest only")
 
         self.metrics = results
         return results
@@ -169,8 +224,15 @@ class AnomalyDetectionModel:
         Returns:
             Dict with is_anomaly, anomaly_score, model used, individual scores
         """
+        # If no models loaded, use heuristic fallback
+        if self.iso_forest is None and self.autoencoder is None:
+            return self._fallback_predict(features)
+
         vals = [features.get(col, 0) for col in self.feature_names]
-        X = self.scaler.transform([vals])
+        try:
+            X = self.scaler.transform([vals])
+        except Exception:
+            return self._fallback_predict(features)
 
         scores = {}
         is_anomaly_votes = []
@@ -182,13 +244,16 @@ class AnomalyDetectionModel:
             scores["isolation_forest"] = iso_score
             is_anomaly_votes.append(iso_pred)
 
-        # Autoencoder
-        if self.autoencoder:
-            recon = self.autoencoder.predict(X, verbose=0)
-            ae_error = float(np.mean((X - recon) ** 2))
-            ae_pred = ae_error > self.ae_threshold if self.ae_threshold else False
-            scores["autoencoder"] = ae_error
-            is_anomaly_votes.append(ae_pred)
+        # PyTorch Autoencoder
+        if self.autoencoder and HAS_TORCH:
+            self.autoencoder.eval()
+            with torch.no_grad():
+                X_tensor = torch.FloatTensor(X).to(self.device)
+                recon = self.autoencoder(X_tensor).cpu().numpy()
+                ae_error = float(np.mean((X - recon) ** 2))
+                ae_pred = ae_error > self.ae_threshold if self.ae_threshold else False
+                scores["autoencoder"] = ae_error
+                is_anomaly_votes.append(ae_pred)
 
         # Combine: anomaly if any detector flags it
         is_anomaly = any(is_anomaly_votes) if is_anomaly_votes else False
@@ -208,6 +273,38 @@ class AnomalyDetectionModel:
             "model": "isolation_forest+autoencoder" if self.autoencoder else "isolation_forest",
         }
 
+    def _fallback_predict(self, features: dict) -> Dict[str, Any]:
+        """Heuristic-based anomaly detection when models aren't trained."""
+        temp = features.get("temperature", 55)
+        vib = features.get("vibration", 3)
+        power = features.get("power_consumption", 50)
+
+        score = 0.0
+        if temp > 90:
+            score += 0.35
+        elif temp > 75:
+            score += 0.15
+        if vib > 8:
+            score += 0.35
+        elif vib > 5:
+            score += 0.15
+        if power > 200:
+            score += 0.2
+        elif power > 150:
+            score += 0.1
+
+        score = min(score, 1.0)
+        return {
+            "is_anomaly": score > 0.5,
+            "anomaly_score": round(score, 3),
+            "component_scores": {
+                "temperature_heuristic": round(min(max(temp - 60, 0) / 40, 1), 3),
+                "vibration_heuristic": round(min(max(vib - 4, 0) / 6, 1), 3),
+                "power_heuristic": round(min(max(power - 100, 0) / 150, 1), 3),
+            },
+            "model": "heuristic_fallback",
+        }
+
     def predict_batch(self, df: pd.DataFrame) -> pd.DataFrame:
         """Predict anomalies for a batch."""
         X_raw = self._get_features(df)
@@ -219,10 +316,13 @@ class AnomalyDetectionModel:
             result["iso_score"] = -self.iso_forest.score_samples(X)
             result["iso_anomaly"] = (self.iso_forest.predict(X) == -1).astype(int)
 
-        if self.autoencoder:
-            recon = self.autoencoder.predict(X, verbose=0)
-            result["ae_error"] = np.mean((X - recon) ** 2, axis=1)
-            result["ae_anomaly"] = (result["ae_error"] > self.ae_threshold).astype(int)
+        if self.autoencoder and HAS_TORCH:
+            self.autoencoder.eval()
+            with torch.no_grad():
+                X_tensor = torch.FloatTensor(X).to(self.device)
+                recon = self.autoencoder(X_tensor).cpu().numpy()
+                result["ae_error"] = np.mean((X - recon) ** 2, axis=1)
+                result["ae_anomaly"] = (result["ae_error"] > self.ae_threshold).astype(int)
 
         return result
 
@@ -257,8 +357,8 @@ class AnomalyDetectionModel:
             "metrics": self.metrics,
         }, os.path.join(model_dir, "anomaly_meta.pkl"))
 
-        if self.autoencoder:
-            self.autoencoder.save(os.path.join(model_dir, "anomaly_autoencoder.keras"))
+        if self.autoencoder and HAS_TORCH:
+            torch.save(self.autoencoder.state_dict(), os.path.join(model_dir, "anomaly_autoencoder.pt"))
 
         print(f"  ✓ Anomaly models saved to {model_dir}")
 
@@ -281,8 +381,12 @@ class AnomalyDetectionModel:
             self.feature_names = meta["feature_names"]
             self.metrics = meta["metrics"]
 
-        ae_path = os.path.join(model_dir, "anomaly_autoencoder.keras")
-        if os.path.exists(ae_path) and HAS_TF:
-            self.autoencoder = keras.models.load_model(ae_path)
+        ae_path = os.path.join(model_dir, "anomaly_autoencoder.pt")
+        if os.path.exists(ae_path) and HAS_TORCH:
+            input_dim = len(self.feature_names)
+            enc_dim = config.model.autoencoder_encoding_dim
+            self.autoencoder = Autoencoder(input_dim, enc_dim).to(self.device)
+            self.autoencoder.load_state_dict(torch.load(ae_path, map_location=self.device, weights_only=True))
+            self.autoencoder.eval()
 
         print("  ✓ Anomaly models loaded")

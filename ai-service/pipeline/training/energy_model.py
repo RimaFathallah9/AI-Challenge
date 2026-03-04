@@ -103,16 +103,18 @@ class EnergyPredictionModel:
 
         results = {}
 
-        # ---- XGBoost ----
+        # ---- XGBoost (GPU-accelerated) ----
         if HAS_XGB:
-            print("  Training XGBoost...")
+            xgb_device = config.gpu.xgboost_device
+            print(f"  Training XGBoost on {xgb_device.upper()}...")
             self.xgb_model = xgb.XGBRegressor(
                 n_estimators=config.model.energy_n_estimators,
                 max_depth=config.model.energy_max_depth,
                 learning_rate=config.model.energy_learning_rate,
                 subsample=config.model.energy_subsample,
                 colsample_bytree=config.model.energy_colsample_bytree,
-                tree_method="hist",
+                tree_method=config.gpu.xgboost_tree_method,
+                device=xgb_device,
                 random_state=42,
                 n_jobs=-1,
                 early_stopping_rounds=30,
@@ -127,15 +129,17 @@ class EnergyPredictionModel:
         else:
             print("  ⚠ XGBoost not available, skipping")
 
-        # ---- LightGBM ----
+        # ---- LightGBM (GPU-accelerated) ----
         if HAS_LGB:
-            print("  Training LightGBM...")
+            lgb_device = config.gpu.lightgbm_device
+            print(f"  Training LightGBM on {lgb_device.upper()}...")
             self.lgb_model = lgb.LGBMRegressor(
                 n_estimators=config.model.energy_n_estimators,
                 max_depth=config.model.energy_max_depth,
                 learning_rate=config.model.energy_learning_rate,
                 subsample=config.model.energy_subsample,
                 colsample_bytree=config.model.energy_colsample_bytree,
+                device=lgb_device,
                 random_state=42,
                 n_jobs=-1,
                 verbose=-1,
@@ -258,6 +262,13 @@ class EnergyPredictionModel:
 
         if os.path.exists(xgb_path):
             self.xgb_model = joblib.load(xgb_path)
+            # Switch to CPU for inference — avoids device mismatch warning
+            # (model trained on CUDA, but single-row inference is faster on CPU anyway)
+            if HAS_XGB and hasattr(self.xgb_model, 'set_params'):
+                try:
+                    self.xgb_model.set_params(device='cpu')
+                except Exception:
+                    pass
         if os.path.exists(lgb_path):
             self.lgb_model = joblib.load(lgb_path)
         if os.path.exists(meta_path):

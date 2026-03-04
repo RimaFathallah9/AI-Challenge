@@ -9,6 +9,49 @@ from typing import List
 
 
 @dataclass
+class GPUConfig:
+    """GPU / CUDA acceleration settings."""
+    use_gpu: bool = True  # Set False to force CPU
+    # Auto-detected at runtime — override only if needed
+    device: str = ""  # "cuda", "cpu", or "" for auto-detect
+
+    def resolve_device(self) -> str:
+        """Resolve the actual device string at runtime."""
+        if self.device:
+            return self.device
+        if not self.use_gpu:
+            return "cpu"
+        # Auto-detect CUDA availability
+        try:
+            import torch
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except (ImportError, OSError, Exception):
+            return "cpu"
+
+    @property
+    def xgboost_device(self) -> str:
+        """XGBoost device string: 'cuda' or 'cpu'."""
+        dev = self.resolve_device()
+        return "cuda" if dev == "cuda" else "cpu"
+
+    @property
+    def xgboost_tree_method(self) -> str:
+        """XGBoost tree_method: 'hist' works for both CPU and GPU."""
+        return "hist"
+
+    @property
+    def lightgbm_device(self) -> str:
+        """LightGBM device string: 'gpu' or 'cpu'."""
+        dev = self.resolve_device()
+        return "gpu" if dev == "cuda" else "cpu"
+
+    @property
+    def torch_device(self) -> str:
+        """PyTorch device string."""
+        return self.resolve_device()
+
+
+@dataclass
 class DataConfig:
     """Synthetic data generation parameters."""
     num_machines: int = 20
@@ -85,6 +128,7 @@ class APIConfig:
 @dataclass
 class NexovaConfig:
     """Root configuration container."""
+    gpu: GPUConfig = field(default_factory=GPUConfig)
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)

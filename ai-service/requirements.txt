@@ -20,8 +20,9 @@ joblib>=1.3.0
 xgboost>=2.0.0
 lightgbm>=4.1.0
 
-# Deep Learning (Autoencoder) — optional, service works without it
-tensorflow>=2.15.0; python_version < "3.13"
+# Deep Learning (Autoencoder — GPU-accelerated via CUDA)
+# Install with: pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch>=2.0.0
 
 # Utilities
 python-multipart>=0.0.6

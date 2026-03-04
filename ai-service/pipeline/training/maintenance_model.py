@@ -96,12 +96,15 @@ class PredictiveMaintenanceModel:
             )
             self.model.fit(X_train, y_train)
         else:
+            xgb_device = config.gpu.xgboost_device
+            print(f"  Training XGBoost Classifier on {xgb_device.upper()}...")
             self.model = xgb.XGBClassifier(
                 n_estimators=config.model.maintenance_n_estimators,
                 max_depth=config.model.maintenance_max_depth,
                 learning_rate=config.model.maintenance_learning_rate,
                 scale_pos_weight=min(imbalance_ratio, config.model.maintenance_scale_pos_weight),
-                tree_method="hist",
+                tree_method=config.gpu.xgboost_tree_method,
+                device=xgb_device,
                 eval_metric="aucpr",
                 random_state=42,
                 n_jobs=-1,
@@ -263,6 +266,12 @@ class PredictiveMaintenanceModel:
         model_path = os.path.join(model_dir, "maintenance_xgb.pkl")
         if os.path.exists(model_path):
             self.model = joblib.load(model_path)
+            # Switch to CPU for inference — avoids device mismatch warning
+            if HAS_XGB and hasattr(self.model, 'set_params'):
+                try:
+                    self.model.set_params(device='cpu')
+                except Exception:
+                    pass
 
         meta_path = os.path.join(model_dir, "maintenance_meta.pkl")
         if os.path.exists(meta_path):

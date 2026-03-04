@@ -72,7 +72,7 @@ class DataPreprocessor:
         # Forward-fill then back-fill small gaps within each machine
         if "machine_id" in df.columns:
             df = df.groupby("machine_id", group_keys=False).apply(
-                lambda g: g.fillna(method="ffill", limit=5).fillna(method="bfill", limit=5)
+                lambda g: g.ffill(limit=5).bfill(limit=5)
             )
 
         # Median impute remaining NaNs

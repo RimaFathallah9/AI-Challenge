@@ -19,6 +19,12 @@ import json
 import time
 from datetime import datetime
 
+# PyTorch must be imported BEFORE sklearn-based modules to avoid DLL conflicts on Windows
+try:
+    import torch
+except (ImportError, OSError):
+    pass
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from config.settings import config
@@ -123,7 +129,7 @@ def run_full_pipeline():
     # ------------------------------------------------------------------
     duration = time.time() - start
     master_metrics = {
-        "pipeline_version": "2.0.0",
+        "pipeline_version": "3.0.0",
         "trained_at": datetime.now().isoformat(),
         "duration_seconds": round(duration, 1),
         "data": {

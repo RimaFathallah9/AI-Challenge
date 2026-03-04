@@ -135,9 +135,9 @@ class NexovaDataGenerator:
     ) -> pd.DataFrame:
         """Generate time-series for a single machine with all patterns."""
         n = len(timestamps)
-        hours = timestamps.hour + timestamps.minute / 60
-        day_of_week = timestamps.dayofweek
-        day_of_year = timestamps.dayofyear
+        hours = np.asarray(timestamps.hour + timestamps.minute / 60, dtype=float)
+        day_of_week = np.asarray(timestamps.dayofweek, dtype=float)
+        day_of_year = np.asarray(timestamps.dayofyear, dtype=float)
 
         # ---- Temporal patterns ----
         # Shift pattern: machines run harder 6 AM – 10 PM
